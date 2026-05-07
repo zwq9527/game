@@ -5908,6 +5908,10 @@ let gameMessage = {
     duration: 2.0
 };
 
+// 救助提示：每只猫每次倒下只提示一次
+let rescueHintShown = { cat1: false, cat2: false };
+let rescueHintTimer = { cat1: 0, cat2: 0 };
+
 function showGameMessage(text, color = '#fff') {
     gameMessage.active = true;
     gameMessage.text = text;
@@ -6042,6 +6046,9 @@ function advInitLevel(level) {
     cat1.speedBoost = 0; cat1.speedBoostTimer = 0; cat1.shield = 0;
     cat2.x = 760; cat2.y = 320; cat2.alive = true; cat2.rescueProgress = 0; cat2.ultCooldown = 0; cat2.invisible = 0; cat2.invisibleTimer = 0; cat2.stunned = 0;
     cat2.speedBoost = 0; cat2.speedBoostTimer = 0; cat2.shield = 0;
+    // 重置救助提示
+    rescueHintShown = { cat1: false, cat2: false };
+    rescueHintTimer = { cat1: 0, cat2: 0 };
     clientTargetState = null; clientLastStateTime = 0;
     if (level === 1) {
         cat1.damageDealt = 0; cat1.kills = 0; cat1.rescues = 0; cat1.pickups = 0;
@@ -8523,6 +8530,10 @@ function updateCat(cat, dt, otherCat, inputKeys) {
                     cat.rescueProgress += dt;
                     if (cat.rescueProgress >= 1) {
                         otherCat.alive = true; otherCat.hp = otherCat.maxHp; cat.rescueProgress = 0;
+                        // 重置救助提示，下次倒下可以再提示一次
+                        const rescuedKey = otherCat === cat1 ? 'cat1' : 'cat2';
+                        rescueHintShown[rescuedKey] = false;
+                        rescueHintTimer[rescuedKey] = 0;
                         cat.rescues++; // 增加救援计数（成就用）
                         achievementSystem.sessionStats.totalRescues++;
                         advCreateRescueParticles(otherCat.x, otherCat.y);
@@ -8565,6 +8576,36 @@ function updateAI(aiCat, playerCat, dt) {
         if (d < nearestPickupDist) { nearestPickupDist = d; nearestPickup = p; }
     }
 
+        // 寻找攻击目标：包括普通敌人和Boss（始终检测，不受道具和跟随影响）
+        let target = null, minDist = Infinity;
+
+        // 检查普通敌人
+        for (let e of enemies) {
+            if (!e.alive) continue;
+            const d = distance(aiCat, e);
+            if (d < minDist) { minDist = d; target = e; }
+        }
+
+        // 检查单个Boss（第二关、第四关等）
+        if (boss && boss.alive) {
+            const d = distance(aiCat, boss);
+            if (d < minDist) { minDist = d; target = boss; }
+        }
+
+        // 检查多个Boss（第十关等）
+        for (let b of bosses) {
+            if (!b.alive) continue;
+            const d = distance(aiCat, b);
+            if (d < minDist) { minDist = d; target = b; }
+        }
+
+        // 检查觉醒Boss（第十一关）
+        for (let b of awakenedBosses) {
+            if (!b.alive) continue;
+            const d = distance(aiCat, b);
+            if (d < minDist) { minDist = d; target = b; }
+        }
+
         // 优先救助倒下的同伴
         if (!playerCat.alive) {
             const dist = distance(aiCat, playerCat);
@@ -8575,47 +8616,30 @@ function updateAI(aiCat, playerCat, dt) {
                 // 距离较远但同伴已倒下，优先过去救助
                 tx = playerCat.x; ty = playerCat.y;
             }
-        } else if (nearestPickup) {
-            // 只有同伴活着时才去捡道具
-            tx = nearestPickup.x; ty = nearestPickup.y;
-        } else {
-            // 寻找攻击目标：包括普通敌人和Boss
-            let target = null, minDist = Infinity;
-
-            // 检查普通敌人
-            for (let e of enemies) {
-                if (!e.alive) continue;
-                const d = distance(aiCat, e);
-                if (d < minDist) { minDist = d; target = e; }
-            }
-
-            // 检查单个Boss（第二关、第四关等）
-            if (boss && boss.alive) {
-                const d = distance(aiCat, boss);
-                if (d < minDist) { minDist = d; target = boss; }
-            }
-
-            // 检查多个Boss（第十关等）
-            for (let b of bosses) {
-                if (!b.alive) continue;
-                const d = distance(aiCat, b);
-                if (d < minDist) { minDist = d; target = b; }
-            }
-
-            // 检查觉醒Boss（第十一关）
-            for (let b of awakenedBosses) {
-                if (!b.alive) continue;
-                const d = distance(aiCat, b);
-                if (d < minDist) { minDist = d; target = b; }
-            }
-
+            // 救助途中也攻击附近敌人
             if (target) {
-                tx = target.x; ty = target.y;
                 if (minDist < 55) shouldMelee = true;
                 else if (minDist < 200) shouldRanged = true;
-            } else if (distance(aiCat, playerCat) > 200) {
-                tx = playerCat.x; ty = playerCat.y;
             }
+        } else if (nearestPickup && minDist > 80) {
+            // 有道具且敌人不近时，去捡道具
+            tx = nearestPickup.x; ty = nearestPickup.y;
+            // 捡道具途中也攻击附近敌人
+            if (target) {
+                if (minDist < 55) shouldMelee = true;
+                else if (minDist < 200) shouldRanged = true;
+            }
+        } else if (target) {
+            // 有敌人时，优先攻击
+            tx = target.x; ty = target.y;
+            if (minDist < 55) shouldMelee = true;
+            else if (minDist < 200) shouldRanged = true;
+        } else if (nearestPickup) {
+            // 没有敌人但有道具，去捡
+            tx = nearestPickup.x; ty = nearestPickup.y;
+        } else if (distance(aiCat, playerCat) > 200) {
+            // 没有敌人也没有道具，跟随玩家
+            tx = playerCat.x; ty = playerCat.y;
         }
 
     const dir = normalize(tx - aiCat.x, ty - aiCat.y);
@@ -8623,8 +8647,8 @@ function updateAI(aiCat, playerCat, dt) {
     if (dir.y > 0.3) aiKeys[aiCat.moveKey.down] = true;
     if (dir.x < -0.3) aiKeys[aiCat.moveKey.left] = true;
     if (dir.x > 0.3) aiKeys[aiCat.moveKey.right] = true;
-    if (shouldMelee) aiKeys[aiCat.meleeKey] = true;
-    if (shouldRanged) { aiKeys[aiCat.rangedKey] = true; aiCat.facing = dir; }
+    if (shouldMelee) { aiKeys[aiCat.meleeKey] = true; if (dir.x !== 0 || dir.y !== 0) aiCat.facing = dir; }
+    if (shouldRanged) { aiKeys[aiCat.rangedKey] = true; if (dir.x !== 0 || dir.y !== 0) aiCat.facing = dir; }
     if (shouldRescue) aiKeys[aiCat.meleeKey] = true; // 救助时按住近战/救助键
 
     let nearbyEnemies = 0;
@@ -8712,8 +8736,8 @@ function updateAIAdversarial(aiCat, playerCat, dt) {
     if (dir.y > 0.3) aiKeys[aiCat.moveKey.down] = true;
     if (dir.x < -0.3) aiKeys[aiCat.moveKey.left] = true;
     if (dir.x > 0.3) aiKeys[aiCat.moveKey.right] = true;
-    if (shouldMelee) aiKeys[aiCat.meleeKey] = true;
-    if (shouldRanged) { aiKeys[aiCat.rangedKey] = true; aiCat.facing = dir; }
+    if (shouldMelee) { aiKeys[aiCat.meleeKey] = true; if (dir.x !== 0 || dir.y !== 0) aiCat.facing = dir; }
+    if (shouldRanged) { aiKeys[aiCat.rangedKey] = true; if (dir.x !== 0 || dir.y !== 0) aiCat.facing = dir; }
 
     // 血量低时使用大招
     if (aiCat.hp < aiCat.maxHp * 0.3 && aiCat.ultCooldown <= 0) aiKeys[aiCat.ultKey] = true;
@@ -11388,17 +11412,33 @@ function advDraw() {
         drawDuelHealthBar(cat1, '#e74c3c', 1);
         drawDuelHealthBar(cat2, '#3498db', 2);
     } else {
-        // 非决斗模式显示救助提示
+        // 非决斗模式显示救助提示（每只猫每次倒下只提示一次，3秒后淡出）
         if (!cat1.alive && cat2.alive && distance(cat2, cat1) < 80) {
-            ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 14px Microsoft YaHei'; ctx.textAlign = 'center';
-            ctx.fillText('按住 O / 救助 键救助小胖！', cat1.x, cat1.y - 45);
-            // 绘制救助进度条
+            if (!rescueHintShown.cat1) {
+                rescueHintShown.cat1 = true;
+                rescueHintTimer.cat1 = 3.0;
+            }
+            if (rescueHintTimer.cat1 > 0) {
+                ctx.globalAlpha = Math.min(1, rescueHintTimer.cat1);
+                ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 14px Microsoft YaHei'; ctx.textAlign = 'center';
+                ctx.fillText('按住 O / 救助 键救助小胖！', cat1.x, cat1.y - 45);
+                ctx.globalAlpha = 1;
+            }
+            // 绘制救助进度条（始终显示）
             drawRescueProgress(cat1, '#f4a460');
         }
         if (!cat2.alive && cat1.alive && distance(cat1, cat2) < 80) {
-            ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 14px Microsoft YaHei'; ctx.textAlign = 'center';
-            ctx.fillText('按住 R / 救助 键救助妹！', cat2.x, cat2.y - 45);
-            // 绘制救助进度条
+            if (!rescueHintShown.cat2) {
+                rescueHintShown.cat2 = true;
+                rescueHintTimer.cat2 = 3.0;
+            }
+            if (rescueHintTimer.cat2 > 0) {
+                ctx.globalAlpha = Math.min(1, rescueHintTimer.cat2);
+                ctx.fillStyle = '#f1c40f'; ctx.font = 'bold 14px Microsoft YaHei'; ctx.textAlign = 'center';
+                ctx.fillText('按住 R / 救助 键救助妹！', cat2.x, cat2.y - 45);
+                ctx.globalAlpha = 1;
+            }
+            // 绘制救助进度条（始终显示）
             drawRescueProgress(cat2, '#b0c4de');
         }
     }
@@ -11587,6 +11627,9 @@ function advGameLoop(timestamp) {
             updateKnockbackLines(dt);
             updateGamepadToast(dt);
             updateGameMessage(dt);
+            // 更新救助提示计时器
+            if (rescueHintTimer.cat1 > 0) rescueHintTimer.cat1 -= dt;
+            if (rescueHintTimer.cat2 > 0) rescueHintTimer.cat2 -= dt;
             
             // 检查大招就绪
             checkUltReady(cat1);
